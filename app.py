@@ -21,19 +21,68 @@ from src.operation_service import (
 from src.mongo_manager import get_incident_history, get_recent_events, aggregate_events_by_type
 
 st.set_page_config(page_title="Emergency Resource Management", page_icon="🚨", layout="wide")
+
+# Custom CSS for Modern Minimalist Analytics Dashboard Theme
+st.markdown("""
+<style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;700&display=swap');
+    
+    html, body, [class*="css"]  {
+        font-family: 'Inter', sans-serif;
+    }
+    
+    /* Typography Hierarchy */
+    h1, h2, h3 {
+        font-weight: 700 !important;
+        color: #2C3E50 !important; /* Slate gray */
+    }
+    
+    /* Card Styling */
+    div[data-testid="stMetric"], div.stForm, div[data-testid="stDataFrame"] {
+        background-color: #FFFFFF;
+        border-radius: 12px;
+        padding: 1.25rem;
+        box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05); /* 5% faint shadow */
+        border: none;
+    }
+    
+    /* Metric Typography */
+    div[data-testid="stMetricValue"] {
+        font-weight: 700;
+        color: #C35A42; /* Terracotta */
+    }
+    
+    div[data-testid="stMetricLabel"] {
+        font-weight: 500;
+        color: #6C7A89; /* Lighter gray for secondary labels */
+    }
+</style>
+""", unsafe_allow_html=True)
+
 st.title("🚨 Emergency Resource Management System")
 st.caption("Academic demo using MySQL for operational records and MongoDB for event history.")
 
 role = st.sidebar.radio("Choose view", ["User View", "Dispatcher View"], help="Role selection is for demonstration only; it is not secure authentication.")
 st.sidebar.divider()
 
+def apply_chart_theme(fig):
+    """Applies flat styling, muted secondary colors, and removes glowing/3D effects."""
+    fig.update_layout(
+        plot_bgcolor="rgba(0,0,0,0)",
+        paper_bgcolor="rgba(0,0,0,0)",
+        font_family="Inter",
+        font_color="#373D3F",
+        margin=dict(t=40, b=40, l=40, r=40)
+    )
+    fig.update_xaxes(showgrid=False, linecolor="#E0E0E0")
+    fig.update_yaxes(showgrid=True, gridcolor="#F0F0F0", linecolor="#E0E0E0")
+    return fig
 
 def show_df(rows, empty_message):
     if rows:
         st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
     else:
         st.info(empty_message)
-
 
 def show_event_history(incident_id):
     result = get_incident_history(int(incident_id))
@@ -47,7 +96,6 @@ def show_event_history(incident_id):
         st.warning("Event history is unavailable. Check MongoDB configuration and connection.")
     else:
         st.info("No event history has been recorded for this incident yet.")
-
 
 if role == "User View":
     st.header("👤 Public / User Portal")
@@ -108,14 +156,20 @@ else:
             c2.metric("Active Incidents", inc.get("active_incidents", 0))
             c3.metric("High / Critical", inc.get("high_critical_incidents", 0))
             c4.metric("Available Resources", f"{res.get('available_resources', 0)} / {res.get('total_resources', 0)}")
+            
             st.subheader("Resource availability by type")
             usage = get_resource_usage_by_type()
             if usage:
                 df = pd.DataFrame(usage)
-                fig = px.bar(df, x="resource_type", y=["available_quantity", "in_use_quantity"], barmode="stack", title="Available vs in-use quantities")
+                # Apply secondary accent colors (Muted Sage Green & Deep Maroon)
+                fig = px.bar(df, x="resource_type", y=["available_quantity", "in_use_quantity"], 
+                             barmode="stack", title="Available vs in-use quantities",
+                             color_discrete_sequence=["#8FA896", "#8A3324"]) 
+                fig = apply_chart_theme(fig)
                 st.plotly_chart(fig, use_container_width=True)
             else:
                 st.info("No resource data available.")
+                
             st.subheader("Recent incidents")
             show_df(get_all_incidents()[:10], "No incidents have been reported.")
         except Exception as exc:
@@ -228,7 +282,9 @@ else:
                 if rows:
                     df = pd.DataFrame(rows)
                     if "hospital_name" in df.columns and "total_quantity" in df.columns:
-                        st.plotly_chart(px.bar(df, x="hospital_name", y="total_quantity", title="Resource quantity by hospital"), use_container_width=True)
+                        fig = px.bar(df, x="hospital_name", y="total_quantity", title="Resource quantity by hospital", color_discrete_sequence=["#C35A42"])
+                        fig = apply_chart_theme(fig)
+                        st.plotly_chart(fig, use_container_width=True)
             except Exception as exc:
                 st.error(str(exc))
         with loc_tab:
@@ -237,7 +293,9 @@ else:
                 show_df(rows, "No location resource data available.")
                 if rows:
                     df = pd.DataFrame(rows)
-                    st.plotly_chart(px.bar(df, x=df.columns[0], y=df.columns[-1], title="Resources by location"), use_container_width=True)
+                    fig = px.bar(df, x=df.columns[0], y=df.columns[-1], title="Resources by location", color_discrete_sequence=["#3A7371"]) # Muted Teal
+                    fig = apply_chart_theme(fig)
+                    st.plotly_chart(fig, use_container_width=True)
             except Exception as exc:
                 st.error(str(exc))
 
