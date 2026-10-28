@@ -1,241 +1,273 @@
-﻿import streamlit as st
+import streamlit as st
 import pandas as pd
 import plotly.express as px
 
-# Backend imports from src package
 from src.incident_manager import (
-    register_incident, get_all_incidents, filter_incidents, update_incident_status
+    register_incident, get_all_incidents, get_incident_by_id,
+    filter_incidents, update_incident_status,
 )
 from src.resource_manager import (
     get_all_resources, get_available_resources, filter_resources,
-    add_resource, allocate_resource, release_allocation, get_allocations
+    add_resource, allocate_resource, release_allocation, get_allocations,
 )
 from src.analytics import (
-    get_incident_summary, get_resource_summary,
-    get_resource_usage_by_type, get_resources_by_hospital, get_resources_by_location
+    get_incident_summary, get_resource_summary, get_resource_usage_by_type,
+    get_resources_by_hospital, get_resources_by_location,
 )
+from src.operation_service import (
+    create_incident_with_event, update_incident_status_with_event,
+    allocate_resource_with_event, release_allocation_with_event,
+)
+from src.mongo_manager import get_incident_history, get_recent_events, aggregate_events_by_type
 
-# Page configuration
-st.set_page_config(page_title="Emergency Resource Management System", layout="wide")
+st.set_page_config(page_title="Emergency Resource Management", page_icon="🚨", layout="wide")
 st.title("🚨 Emergency Resource Management System")
+st.caption("Academic demo using MySQL for operational records and MongoDB for event history.")
 
-# Navigation Sidebar
-navigation = st.sidebar.radio(
-    "Navigation",
-    ["Dashboard", "Incident Management", "Resource Management", "Resource Allocation", "Reports & Analytics"]
-)
+role = st.sidebar.radio("Choose view", ["User View", "Dispatcher View"], help="Role selection is for demonstration only; it is not secure authentication.")
+st.sidebar.divider()
 
-# =========================================================
-# 1. DASHBOARD SCREEN
-# =========================================================
-if navigation == "Dashboard":
-    st.header("📊 Executive Dashboard")
-    
-    try:
-        inc_summary = get_incident_summary()
-        res_summary = get_resource_summary()
-        
-        # KPI Metric Cards
-        col1, col2, col3, col4 = st.columns(4)
-        col1.metric("Total Incidents", inc_summary.get("total_incidents", 0))
-        col2.metric("Active Incidents", inc_summary.get("active_incidents", 0))
-        col3.metric("High/Critical Incidents", inc_summary.get("high_critical_incidents", 0))
-        col4.metric("Available Resources", f"{res_summary.get('available_resources', 0)} / {res_summary.get('total_resources', 0)}")
-        
-        st.divider()
-        
-        # Plotly Chart: Resource Usage by Type
-        st.subheader("Resource Usage by Type")
-        usage_data = get_resource_usage_by_type()
-        if usage_data:
-            df_usage = pd.DataFrame(usage_data)
-            fig = px.bar(
-                df_usage, 
-                x="resource_type", 
-                y=["available_quantity", "in_use_quantity"],
-                title="Available vs In-Use Quantities",
-                labels={"value": "Quantity", "resource_type": "Resource Type", "variable": "Status"},
-                barmode="stack"
-            )
-            st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.info("No resource data available.")
 
-    except Exception as e:
-        st.error(f"Error loading dashboard metrics: {e}")
-
-# =========================================================
-# 2. INCIDENT MANAGEMENT SCREEN
-# =========================================================
-elif navigation == "Incident Management":
-    st.header("🚨 Incident Management")
-    
-    tab1, tab2, tab3 = st.tabs(["View & Filter Incidents", "Register Incident", "Update Incident Status"])
-    
-    with tab1:
-        st.subheader("Filter Incidents")
-        col_f1, col_f2 = st.columns(2)
-        with col_f1:
-            sev_filter = st.selectbox("Severity", ["All", "Low", "Medium", "High", "Critical"])
-        with col_f2:
-            stat_filter = st.selectbox("Status", ["All", "Reported", "In Progress", "Resolved", "Cancelled"])
-            
-        sev = None if sev_filter == "All" else sev_filter
-        stat = None if stat_filter == "All" else stat_filter
-        
-        incidents = filter_incidents(severity=sev, status=stat)
-        if incidents:
-            st.dataframe(pd.DataFrame(incidents), use_container_width=True)
-        else:
-            st.info("No incidents found matching the selected filters.")
-
-    with tab2:
-        st.subheader("Register New Emergency Incident")
-        with st.form("register_incident_form"):
-            inc_type = st.text_input("Incident Type (e.g. Road Accident, Structure Fire)")
-            loc = st.text_input("Location")
-            sev = st.selectbox("Severity Level", ["Low", "Medium", "High", "Critical"], index=1)
-            desc = st.text_area("Description (Optional)")
-            
-            if st.form_submit_button("Register Incident"):
-                if not inc_type or not loc:
-                    st.warning("Incident Type and Location are required.")
-                else:
-                    try:
-                        new_id = register_incident(inc_type, loc, severity=sev, description=desc)
-                        st.success(f"Incident registered successfully! Allocated ID: **{new_id}**")
-                    except Exception as err:
-                        st.error(f"Failed to register incident: {err}")
-
-    with tab3:
-        st.subheader("Update Status of Existing Incident")
-        with st.form("update_status_form"):
-            inc_id = st.number_input("Incident ID", min_value=1, step=1)
-            new_status = st.selectbox("New Status", ["Reported", "In Progress", "Resolved", "Cancelled"])
-            
-            if st.form_submit_button("Update Status"):
-                try:
-                    updated = update_incident_status(int(inc_id), new_status)
-                    st.success(f"Incident {inc_id} updated to status: **{new_status}**")
-                except ValueError as err:
-                    st.error(str(err))
-
-# =========================================================
-# 3. RESOURCE MANAGEMENT SCREEN
-# =========================================================
-elif navigation == "Resource Management":
-    st.header("📦 Resource Inventory")
-    
-    tab1, tab2 = st.tabs(["Search Inventory", "Add New Resource"])
-    
-    with tab1:
-        col_r1, col_r2 = st.columns(2)
-        with col_r1:
-            type_filter = st.selectbox("Resource Type", ["All", "Ambulance", "Hospital Bed", "Medical Supply", "Personnel", "Rescue Equipment"])
-        with col_r2:
-            loc_search = st.text_input("Filter Location Substring")
-            
-        r_type = None if type_filter == "All" else type_filter
-        r_loc = loc_search if loc_search.strip() else None
-        
-        resources = filter_resources(resource_type=r_type, location=r_loc)
-        if resources:
-            st.dataframe(pd.DataFrame(resources), use_container_width=True)
-        else:
-            st.info("No resources found matching criteria.")
-            
-    with tab2:
-        st.subheader("Add Resource Entry")
-        with st.form("add_resource_form"):
-            res_name = st.text_input("Resource Name (e.g. ICU Bed, Type A Ambulance)")
-            res_type = st.selectbox("Resource Type", ["Ambulance", "Hospital Bed", "Medical Supply", "Personnel", "Rescue Equipment"])
-            total_q = st.number_input("Total Quantity", min_value=1, value=5)
-            res_loc = st.text_input("Storage Location")
-            hosp_id = st.number_input("Hospital ID (Optional, 0 for None)", min_value=0, value=0)
-            
-            if st.form_submit_button("Add Resource"):
-                if not res_name or not res_loc:
-                    st.warning("Resource Name and Location are required.")
-                else:
-                    try:
-                        h_id = int(hosp_id) if hosp_id > 0 else None
-                        r_id = add_resource(res_name, res_type, int(total_q), res_loc, hospital_id=h_id)
-                        st.success(f"Resource added successfully! New Resource ID: **{r_id}**")
-                    except Exception as err:
-                        st.error(f"Failed to add resource: {err}")
-
-# =========================================================
-# 4. RESOURCE ALLOCATION SCREEN
-# =========================================================
-elif navigation == "Resource Allocation":
-    st.header("🔄 Resource Allocation & Release")
-    
-    col_alloc, col_release = st.columns(2)
-    
-    with col_alloc:
-        st.subheader("Allocate Resource to Incident")
-        with st.form("allocate_form"):
-            inc_id = st.number_input("Incident ID", min_value=1, step=1)
-            res_id = st.number_input("Resource ID", min_value=1, step=1)
-            qty = st.number_input("Quantity Required", min_value=1, value=1)
-            
-            if st.form_submit_button("Submit Allocation"):
-                try:
-                    alloc_id = allocate_resource(int(inc_id), int(res_id), int(qty))
-                    st.success(f"Allocation Successful! Allocation ID: **{alloc_id}**")
-                except ValueError as err:
-                    st.error(f"Allocation Denied: {err}")
-
-    with col_release:
-        st.subheader("Release Active Allocation")
-        with st.form("release_form"):
-            target_alloc_id = st.number_input("Allocation ID to Release", min_value=1, step=1)
-            
-            if st.form_submit_button("Release Allocation"):
-                try:
-                    res = release_allocation(int(target_alloc_id))
-                    st.success(f"Allocation **{target_alloc_id}** released! Restored **{res['quantity_restored']}** unit(s).")
-                except (ValueError, RuntimeError) as err:
-                    st.error(f"Release Failed: {err}")
-                    
-    st.divider()
-    st.subheader("Allocation History")
-    allocations = get_allocations()
-    if allocations:
-        st.dataframe(pd.DataFrame(allocations), use_container_width=True)
+def show_df(rows, empty_message):
+    if rows:
+        st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
     else:
-        st.info("No active or past allocation records.")
+        st.info(empty_message)
 
-# =========================================================
-# 5. REPORTS & ANALYTICS SCREEN
-# =========================================================
-elif navigation == "Reports & Analytics":
-    st.header("📈 System Reports & Location Analytics")
-    
-    tab_hosp, tab_loc = st.tabs(["Hospital Breakdown", "Location Breakdown"])
-    
-    with tab_hosp:
-        st.subheader("Resources Grouped by Hospital")
-        hosp_data = get_resources_by_hospital()
-        if hosp_data:
-            df_hosp = pd.DataFrame(hosp_data)
-            st.dataframe(df_hosp, use_container_width=True)
-            
-            fig_hosp = px.bar(
-                df_hosp, 
-                x="hospital_name", 
-                y=["total_quantity", "available_quantity"],
-                title="Hospital Resource Capacity",
-                barmode="group"
-            )
-            st.plotly_chart(fig_hosp, use_container_width=True)
-        else:
-            st.info("No hospital breakdown data available.")
-            
-    with tab_loc:
-        st.subheader("Resources Grouped by Location & Type")
-        loc_data = get_resources_by_location()
-        if loc_data:
-            st.dataframe(pd.DataFrame(loc_data), use_container_width=True)
-        else:
-            st.info("No location breakdown data available.")
+
+def show_event_history(incident_id):
+    result = get_incident_history(int(incident_id))
+    if result.get("ok") and result.get("events"):
+        events = result["events"]
+        for item in events:
+            if item.get("timestamp"):
+                item["timestamp"] = str(item["timestamp"])
+        st.dataframe(pd.DataFrame(events), use_container_width=True, hide_index=True)
+    elif not result.get("ok"):
+        st.warning("Event history is unavailable. Check MongoDB configuration and connection.")
+    else:
+        st.info("No event history has been recorded for this incident yet.")
+
+
+if role == "User View":
+    st.header("👤 Public / User Portal")
+    st.write("Report an emergency incident and use its incident ID to check the current status.")
+    report_tab, track_tab = st.tabs(["Report an Incident", "Track an Incident"])
+
+    with report_tab:
+        with st.form("user_report_incident", clear_on_submit=True):
+            incident_type = st.selectbox("Incident type", ["Road Accident", "Medical Emergency", "Fire", "Flood", "Building Collapse", "Other"])
+            if incident_type == "Other":
+                incident_type = st.text_input("Specify incident type")
+            location = st.text_input("Location / address")
+            severity = st.select_slider("Severity", options=["Low", "Medium", "High", "Critical"], value="Medium")
+            description = st.text_area("Additional details (optional)", max_chars=2000)
+            submitted = st.form_submit_button("Submit Emergency Report", type="primary")
+        if submitted:
+            if not str(incident_type).strip() or not location.strip():
+                st.error("Please provide an incident type and location.")
+            else:
+                try:
+                    result = create_incident_with_event(str(incident_type).strip(), location.strip(), severity, description.strip() or None)
+                    st.success(f"Report submitted. Your incident ID is **{result['incident_id']}**. Save this ID to track updates.")
+                    if not result.get("log_status", {}).get("ok"):
+                        st.warning("The report was saved, but the event history service is currently unavailable.")
+                except Exception as exc:
+                    st.error(f"Could not submit report: {exc}")
+
+    with track_tab:
+        incident_id = st.number_input("Incident ID", min_value=1, step=1, key="user_track_id")
+        if st.button("Check Status", type="primary"):
+            try:
+                incident = get_incident_by_id(int(incident_id))
+                if not incident:
+                    st.error("No incident found with that ID.")
+                else:
+                    st.subheader(f"Incident #{incident['incident_id']}")
+                    c1, c2, c3 = st.columns(3)
+                    c1.metric("Status", incident.get("status", "Unknown"))
+                    c2.metric("Severity", incident.get("severity", "Unknown"))
+                    c3.metric("Type", incident.get("incident_type", "Unknown"))
+                    st.write(f"**Location:** {incident.get('location', 'Not recorded')}")
+                    st.write(f"**Description:** {incident.get('description') or 'No additional details'}")
+                    st.write("**Event history**")
+                    show_event_history(int(incident_id))
+            except Exception as exc:
+                st.error(f"Could not retrieve incident: {exc}")
+
+else:
+    st.header("🧭 Dispatcher Console")
+    page = st.sidebar.radio("Dispatcher tools", ["Dashboard", "Incidents", "Resources", "Allocations", "Reports & Analytics", "Event History"])
+
+    if page == "Dashboard":
+        try:
+            inc = get_incident_summary()
+            res = get_resource_summary()
+            c1, c2, c3, c4 = st.columns(4)
+            c1.metric("Total Incidents", inc.get("total_incidents", 0))
+            c2.metric("Active Incidents", inc.get("active_incidents", 0))
+            c3.metric("High / Critical", inc.get("high_critical_incidents", 0))
+            c4.metric("Available Resources", f"{res.get('available_resources', 0)} / {res.get('total_resources', 0)}")
+            st.subheader("Resource availability by type")
+            usage = get_resource_usage_by_type()
+            if usage:
+                df = pd.DataFrame(usage)
+                fig = px.bar(df, x="resource_type", y=["available_quantity", "in_use_quantity"], barmode="stack", title="Available vs in-use quantities")
+                st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.info("No resource data available.")
+            st.subheader("Recent incidents")
+            show_df(get_all_incidents()[:10], "No incidents have been reported.")
+        except Exception as exc:
+            st.error(f"Dashboard could not load: {exc}")
+
+    elif page == "Incidents":
+        view_tab, create_tab, status_tab = st.tabs(["View / Filter", "Register Incident", "Update Status"])
+        with view_tab:
+            c1, c2 = st.columns(2)
+            severity = c1.selectbox("Severity", ["All", "Low", "Medium", "High", "Critical"])
+            status = c2.selectbox("Status", ["All", "Reported", "In Progress", "Resolved", "Cancelled"])
+            try:
+                show_df(filter_incidents(None if severity == "All" else severity, None if status == "All" else status), "No incidents match these filters.")
+            except Exception as exc:
+                st.error(str(exc))
+        with create_tab:
+            with st.form("dispatcher_create_incident"):
+                incident_type = st.text_input("Incident type")
+                location = st.text_input("Location")
+                severity = st.selectbox("Severity level", ["Low", "Medium", "High", "Critical"], index=1)
+                description = st.text_area("Description")
+                submit = st.form_submit_button("Register incident")
+            if submit:
+                try:
+                    result = create_incident_with_event(incident_type, location, severity, description or None)
+                    st.success(f"Incident created: #{result['incident_id']}")
+                    if not result["log_status"].get("ok"):
+                        st.warning("Saved to MySQL, but MongoDB logging failed.")
+                except Exception as exc:
+                    st.error(str(exc))
+        with status_tab:
+            with st.form("dispatcher_update_status"):
+                incident_id = st.number_input("Incident ID", min_value=1, step=1)
+                new_status = st.selectbox("New status", ["Reported", "In Progress", "Resolved", "Cancelled"])
+                submit = st.form_submit_button("Update status")
+            if submit:
+                try:
+                    result = update_incident_status_with_event(int(incident_id), new_status)
+                    st.success(f"Incident #{incident_id} status updated to {new_status}.")
+                    if not result["log_status"].get("ok"):
+                        st.warning("Status saved to MySQL, but MongoDB logging failed.")
+                except Exception as exc:
+                    st.error(str(exc))
+
+    elif page == "Resources":
+        inv_tab, add_tab = st.tabs(["Inventory", "Add Resource"])
+        with inv_tab:
+            c1, c2 = st.columns(2)
+            resource_type = c1.selectbox("Resource type", ["All", "Ambulance", "Hospital Bed", "Medical Supply", "Personnel", "Rescue Equipment"])
+            location = c2.text_input("Location contains")
+            try:
+                show_df(filter_resources(None if resource_type == "All" else resource_type, location.strip() or None), "No resources match these filters.")
+            except Exception as exc:
+                st.error(str(exc))
+        with add_tab:
+            with st.form("add_resource"):
+                name = st.text_input("Resource name")
+                kind = st.selectbox("Resource type", ["Ambulance", "Hospital Bed", "Medical Supply", "Personnel", "Rescue Equipment"])
+                total = st.number_input("Total quantity", min_value=1, value=1)
+                location = st.text_input("Storage location")
+                hospital_id = st.number_input("Hospital ID (0 for none)", min_value=0, value=0)
+                submit = st.form_submit_button("Add resource")
+            if submit:
+                try:
+                    new_id = add_resource(name, kind, int(total), location, hospital_id=int(hospital_id) or None)
+                    st.success(f"Resource added. ID: {new_id}")
+                except Exception as exc:
+                    st.error(str(exc))
+
+    elif page == "Allocations":
+        alloc_tab, release_tab, history_tab = st.tabs(["Allocate", "Release", "Allocation History"])
+        with alloc_tab:
+            with st.form("allocate_resource"):
+                incident_id = st.number_input("Incident ID", min_value=1, step=1)
+                resource_id = st.number_input("Resource ID", min_value=1, step=1)
+                quantity = st.number_input("Quantity", min_value=1, value=1)
+                submit = st.form_submit_button("Allocate resource")
+            if submit:
+                try:
+                    result = allocate_resource_with_event(int(incident_id), int(resource_id), int(quantity))
+                    st.success(f"Allocation created: #{result['allocation_id']}")
+                    if not result["log_status"].get("ok"):
+                        st.warning("Allocation saved to MySQL, but MongoDB logging failed.")
+                except Exception as exc:
+                    st.error(str(exc))
+        with release_tab:
+            with st.form("release_resource"):
+                allocation_id = st.number_input("Allocation ID", min_value=1, step=1)
+                submit = st.form_submit_button("Release allocation")
+            if submit:
+                try:
+                    result = release_allocation_with_event(int(allocation_id))
+                    st.success(f"Allocation released; restored {result['quantity_restored']} unit(s).")
+                    if not result["log_status"].get("ok"):
+                        st.warning("Release saved to MySQL, but MongoDB logging failed.")
+                except Exception as exc:
+                    st.error(str(exc))
+        with history_tab:
+            try:
+                show_df(get_allocations(), "No allocation records found.")
+            except Exception as exc:
+                st.error(str(exc))
+
+    elif page == "Reports & Analytics":
+        hosp_tab, loc_tab = st.tabs(["By Hospital", "By Location"])
+        with hosp_tab:
+            try:
+                rows = get_resources_by_hospital()
+                show_df(rows, "No hospital resource data available.")
+                if rows:
+                    df = pd.DataFrame(rows)
+                    if "hospital_name" in df.columns and "total_quantity" in df.columns:
+                        st.plotly_chart(px.bar(df, x="hospital_name", y="total_quantity", title="Resource quantity by hospital"), use_container_width=True)
+            except Exception as exc:
+                st.error(str(exc))
+        with loc_tab:
+            try:
+                rows = get_resources_by_location()
+                show_df(rows, "No location resource data available.")
+                if rows:
+                    df = pd.DataFrame(rows)
+                    st.plotly_chart(px.bar(df, x=df.columns[0], y=df.columns[-1], title="Resources by location"), use_container_width=True)
+            except Exception as exc:
+                st.error(str(exc))
+
+    elif page == "Event History":
+        recent_tab, incident_tab, aggregate_tab = st.tabs(["Recent Events", "Incident History", "Event Summary"])
+        with recent_tab:
+            try:
+                result = get_recent_events(100)
+                if result.get("ok"):
+                    rows = result.get("events", [])
+                    for item in rows:
+                        if item.get("timestamp"):
+                            item["timestamp"] = str(item["timestamp"])
+                    show_df(rows, "No events have been logged yet.")
+                else:
+                    st.warning("MongoDB is unavailable: " + result.get("error", "unknown error"))
+            except Exception as exc:
+                st.warning(f"MongoDB event history unavailable: {exc}")
+        with incident_tab:
+            incident_id = st.number_input("Incident ID to inspect", min_value=1, step=1, key="dispatcher_history_id")
+            if st.button("Load incident events"):
+                show_event_history(int(incident_id))
+        with aggregate_tab:
+            try:
+                result = aggregate_events_by_type()
+                if result.get("ok"):
+                    show_df(result.get("results", []), "No event summary available.")
+                else:
+                    st.warning("MongoDB is unavailable: " + result.get("error", "unknown error"))
+            except Exception as exc:
+                st.warning(f"MongoDB event summary unavailable: {exc}")
+
+st.sidebar.caption("Demo only — not for real emergency dispatch. Role selection is not authentication.")
